@@ -31,16 +31,21 @@ py-admin-launch -- your-command arg1 arg2
 Useful options:
 
 ```bash
-py-admin-launch --wait --cwd /path/to/workdir -- your-command arg1 arg2
+py-admin-launch --cwd /path/to/workdir -- your-command arg1 arg2
+py-admin-launch --no-wait -- your-command arg1 arg2
 ```
 
-`--wait` makes `py-admin-launch` wait until the launched command exits and then
-return that command's exit code when the platform launcher supports it. Without
-`--wait`, `py-admin-launch` only starts the command and returns after the
-elevation request is handed off.
+The CLI waits by default. On Linux and macOS, that means `py-admin-launch`
+returns the elevated command's exit code, including failures such as cancelled
+authentication or a failed `pkexec`/`sudo` invocation. This matches the behavior
+users usually expect from commands like `sudo your-command`.
+
+Use `--no-wait` only when you intentionally want to start the command in the
+background and return after the elevation request is handed off. In that mode,
+the launcher cannot report the elevated command's later exit code.
 
 On Windows, elevated launches use `ShellExecuteW(..., "runas", ...)`, which does
-not provide a child process handle to this helper. That means `--wait` cannot
+not provide a child process handle to this helper. That means the CLI cannot
 observe the elevated program's exit code on Windows.
 
 ## Python API

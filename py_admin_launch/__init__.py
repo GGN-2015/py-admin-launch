@@ -97,10 +97,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prog="py-admin-launch",
         description="Launch a command with administrator/root privileges.",
     )
-    parser.add_argument(
+    wait_group = parser.add_mutually_exclusive_group()
+    wait_group.add_argument(
         "--wait",
         action="store_true",
-        help="wait for the command to finish when the platform launcher supports it",
+        dest="wait",
+        default=True,
+        help="wait for the command to finish and return its exit code (default)",
+    )
+    wait_group.add_argument(
+        "--no-wait",
+        action="store_false",
+        dest="wait",
+        help="start the command and return after the elevation request is handed off",
     )
     parser.add_argument(
         "--cwd",

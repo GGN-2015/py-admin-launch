@@ -80,6 +80,22 @@ class AdminLaunchTests(unittest.TestCase):
         )
         self.assertTrue(result.elevated)
 
+    def test_cli_waits_by_default_and_returns_child_exit_code(self):
+        result = py_admin_launch.LaunchResult(elevated=True, returncode=7, pid=123)
+        with mock.patch("py_admin_launch.launch", return_value=result) as launch:
+            exit_code = py_admin_launch.main(["tool", "arg"])
+
+        launch.assert_called_once_with(["tool", "arg"], cwd=None, wait=True)
+        self.assertEqual(exit_code, 7)
+
+    def test_cli_no_wait_hands_off_and_returns_zero(self):
+        result = py_admin_launch.LaunchResult(elevated=True, returncode=None, pid=123)
+        with mock.patch("py_admin_launch.launch", return_value=result) as launch:
+            exit_code = py_admin_launch.main(["--no-wait", "tool", "arg"])
+
+        launch.assert_called_once_with(["tool", "arg"], cwd=None, wait=False)
+        self.assertEqual(exit_code, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
