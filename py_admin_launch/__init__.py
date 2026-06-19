@@ -65,6 +65,8 @@ def launch(
     mechanism is used:
 
     * Linux: ``pkexec`` (polkit GUI authentication), falling back to ``sudo``.
+      Desktop session variables are passed explicitly so GUI programs can find
+      the display after privilege elevation.
     * Windows: ``ShellExecuteW(..., "runas", ...)``.
     * macOS: ``osascript`` with ``administrator privileges``.
 
@@ -171,17 +173,51 @@ def _launch_linux(
     wait: bool,
 ) -> LaunchResult:
     elevator = shutil.which("pkexec")
-    elevated_argv = ["pkexec", *argv]
     if elevator is None:
         elevator = shutil.which("sudo")
-        elevated_argv = ["sudo", *argv]
     if elevator is None:
         raise AdminLaunchError("neither pkexec nor sudo was found")
 
+    elevated_argv = [elevator, *_linux_elevated_command(argv)]
     process = subprocess.Popen(elevated_argv, cwd=cwd)
     if wait:
         return LaunchResult(elevated=True, returncode=process.wait(), pid=process.pid)
     return LaunchResult(elevated=True, pid=process.pid)
+
+
+def _linux_elevated_command(argv: Sequence[str]) -> list[str]:
+    command_argv = _resolve_linux_executable(argv)
+    gui_env = _linux_gui_env_assignments()
+    if not gui_env:
+        return command_argv
+
+    env_executable = shutil.which("env") or "/usr/bin/env"
+    return [env_executable, *gui_env, *command_argv]
+
+
+def _resolve_linux_executable(argv: Sequence[str]) -> list[str]:
+    command_argv = list(argv)
+    executable = command_argv[0]
+    if os.path.dirname(executable):
+        return command_argv
+
+    resolved = shutil.which(executable)
+    if resolved is not None:
+        command_argv[0] = resolved
+    return command_argv
+
+
+def _linux_gui_env_assignments() -> list[str]:
+    assignments = [
+        f"{name}={value}"
+        for name in _LINUX_GUI_ENV_VARS
+        if (value := os.environ.get(name))
+    ]
+    if "XAUTHORITY" not in os.environ:
+        fallback_xauthority = os.path.expanduser("~/.Xauthority")
+        if os.path.exists(fallback_xauthority):
+            assignments.append(f"XAUTHORITY={fallback_xauthority}")
+    return assignments
 
 
 def _launch_windows(argv: Sequence[str], *, cwd: Optional[str]) -> LaunchResult:
@@ -279,6 +315,15 @@ _WINDOWS_SHELLEXECUTE_ERRORS = {
     31: "there is no application associated with the specified file",
     32: "the specified DLL was not found",
 }
+
+
+_LINUX_GUI_ENV_VARS = (
+    "DISPLAY",
+    "XAUTHORITY",
+    "WAYLAND_DISPLAY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+)
 
 
 __all__ = [

@@ -6,7 +6,10 @@ administrator privileges.
 ## Strategy
 
 - Linux desktop: `pkexec` for polkit GUI authentication, falling back to `sudo`
-  when `pkexec` is not available.
+  when `pkexec` is not available. GUI session variables such as `DISPLAY`,
+  `XAUTHORITY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and
+  `DBUS_SESSION_BUS_ADDRESS` are passed explicitly so desktop apps can still
+  reach the current display after elevation.
 - Windows: `ShellExecuteW(..., "runas", ...)`.
 - macOS: `osascript` + `with administrator privileges`, falling back to `sudo`
   when `osascript` is not available.
