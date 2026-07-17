@@ -3,6 +3,10 @@
 A cross-platform Python command/helper to launch a specified program with
 administrator privileges.
 
+Python 3.6 and every later Python 3 release are supported. Python 3.6 installs
+the small `dataclasses` backport automatically; newer interpreters use the
+standard-library implementation.
+
 ## Strategy
 
 - Linux desktop: `pkexec` for polkit GUI authentication, falling back to `sudo`

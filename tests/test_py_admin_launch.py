@@ -97,7 +97,7 @@ class AdminLaunchTests(unittest.TestCase):
             result = py_admin_launch.launch(["tool", "two words"])
 
         popen.assert_called_once()
-        called_argv = popen.call_args.args[0]
+        called_argv = popen.call_args[0][0]
         self.assertEqual(called_argv[:2], ["/usr/bin/osascript", "-e"])
         self.assertIn("with administrator privileges", called_argv[2])
         self.assertIn("'two words'", called_argv[2])

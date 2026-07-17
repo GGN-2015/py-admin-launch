@@ -1,7 +1,5 @@
 """Cross-platform helpers for launching a command as administrator/root."""
 
-from __future__ import annotations
-
 import argparse
 import ctypes
 import os
@@ -11,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 
 PathLike = Union[str, os.PathLike]
@@ -139,7 +137,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return result.returncode if result.returncode is not None else 0
 
 
-def _normalize_command(command: Command, args: Sequence[PathLike]) -> list[str]:
+def _normalize_command(command: Command, args: Sequence[PathLike]) -> List[str]:
     if isinstance(command, (str, os.PathLike)):
         argv = [os.fspath(command)]
     else:
@@ -185,7 +183,7 @@ def _launch_linux(
     return LaunchResult(elevated=True, pid=process.pid)
 
 
-def _linux_elevated_command(argv: Sequence[str]) -> list[str]:
+def _linux_elevated_command(argv: Sequence[str]) -> List[str]:
     command_argv = _resolve_linux_executable(argv)
     gui_env = _linux_gui_env_assignments()
     if not gui_env:
@@ -195,7 +193,7 @@ def _linux_elevated_command(argv: Sequence[str]) -> list[str]:
     return [env_executable, *gui_env, *command_argv]
 
 
-def _resolve_linux_executable(argv: Sequence[str]) -> list[str]:
+def _resolve_linux_executable(argv: Sequence[str]) -> List[str]:
     command_argv = list(argv)
     executable = command_argv[0]
     if os.path.dirname(executable):
@@ -207,12 +205,12 @@ def _resolve_linux_executable(argv: Sequence[str]) -> list[str]:
     return command_argv
 
 
-def _linux_gui_env_assignments() -> list[str]:
-    assignments = [
-        f"{name}={value}"
-        for name in _LINUX_GUI_ENV_VARS
-        if (value := os.environ.get(name))
-    ]
+def _linux_gui_env_assignments() -> List[str]:
+    assignments = []
+    for name in _LINUX_GUI_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            assignments.append("{}={}".format(name, value))
     if "XAUTHORITY" not in os.environ:
         fallback_xauthority = os.path.expanduser("~/.Xauthority")
         if os.path.exists(fallback_xauthority):
