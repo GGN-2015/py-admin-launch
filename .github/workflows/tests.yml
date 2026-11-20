@@ -27,7 +27,9 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests
       - name: Exercise CLI
-        run: py-admin-launch --help
+        run: |
+          py-admin-launch --help
+          py-sudo --help
 
   python36-native:
     strategy:
@@ -46,7 +48,9 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests
       - name: Exercise CLI
-        run: py-admin-launch --help
+        run: |
+          py-admin-launch --help
+          py-sudo --help
 
   python36-linux:
     runs-on: ubuntu-22.04

@@ -50,6 +50,9 @@ def run():
                         ctypes.c_void_p(msvcrt.get_osfhandle(keyboard.fileno())), records,
                         len(text) + 1, ctypes.byref(count))
 
+    if os.getenv("PAL_TEST_PY_SUDO"):
+        from py_admin_launch.sudo import main
+        return main(sys.argv[1:])
     return py_admin_launch.main(sys.argv[1:])
 
 

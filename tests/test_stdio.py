@@ -47,6 +47,13 @@ class StdioTests(unittest.TestCase):
             stream.close()
 
     def test_binary_streams_cwd_arguments_and_status(self):
+        self.check_binary_streams(False)
+
+    @unittest.skipUnless(WINDOWS, "Windows py-sudo UAC backend")
+    def test_py_sudo_binary_streams_cwd_arguments_and_status(self):
+        self.check_binary_streams(True)
+
+    def check_binary_streams(self, py_sudo):
         payload = bytes(range(256)) * 4096
         arguments = ["two words", 'a"b', "", "trailing space \\", "\u732b"]
         check_elevation = "assert os.geteuid()==0;"
@@ -59,7 +66,9 @@ class StdioTests(unittest.TestCase):
                     check_elevation +
                     "data=sys.stdin.buffer.read();sys.stderr.buffer.write(data[::-1]);"
                     "sys.stdout.buffer.write(data);sys.exit(37)")
-            process = self.start(["--cwd", cwd, "--", sys.executable, "-c", code, cwd] + arguments)
+            flags = ["-u", "root", "-D"] if py_sudo else ["--cwd"]
+            process = self.start(flags + [cwd, "--", sys.executable, "-c", code, cwd] + arguments,
+                                 {"PAL_TEST_PY_SUDO": "1"} if py_sudo else {})
             stdout, stderr = process.communicate(payload, timeout=30)
             self.assertEqual(process.returncode, 37, stderr[:1024])
             self.assertEqual(stdout, payload)
@@ -67,6 +76,10 @@ class StdioTests(unittest.TestCase):
 
     def test_interrupt_reaches_child_before_launcher_returns(self):
         self.check_interrupt(False)
+
+    @unittest.skipUnless(WINDOWS, "Windows py-sudo UAC backend")
+    def test_py_sudo_interrupt_reaches_child(self):
+        self.check_interrupt(False, py_sudo=True)
 
     @unittest.skipUnless(WINDOWS, "native shared Windows console")
     def test_interrupt_shared_console_with_redirected_outputs(self):
@@ -81,7 +94,7 @@ class StdioTests(unittest.TestCase):
         self.assertEqual(process.communicate(timeout=15), (text.encode("utf-8"), b""))
         self.assertEqual(process.returncode, 0)
 
-    def check_interrupt(self, console):
+    def check_interrupt(self, console, py_sudo=False):
         with tempfile.TemporaryDirectory() as directory:
             ready = os.path.join(directory, "ready")
             code = ("import os,sys,signal,time\n"
@@ -90,6 +103,8 @@ class StdioTests(unittest.TestCase):
                     "assert sys.stdin.isatty()=={}\n".format(console) +
                     "open(sys.argv[1],'w').close()\nwhile True: time.sleep(.05)")
             env = {"PAL_INTERRUPT_WHEN": ready}
+            if py_sudo:
+                env["PAL_TEST_PY_SUDO"] = "1"
             if console:
                 env["PAL_CONSOLE_STDIN"] = "1"
             process = self.start(["--", sys.executable, "-c", code, ready], env)

@@ -68,6 +68,33 @@ started. The child retains its stream handles, but the launcher no longer waits
 for its exit or supervises Ctrl+C. Redirect streams before handing off if the
 child should not share the terminal.
 
+### `py-sudo`: sudo-style arguments
+
+Install `py-admin-launch` to get both commands. With `py-sudo`, put options
+before the command. Arguments after the command belong to the command:
+
+```sh
+py-sudo whoami
+py-sudo -n -- your-command --help
+```
+
+On **Linux and macOS**, `py-sudo` replaces itself with the system `sudo` and
+passes every argument unchanged, even when already root. For example,
+`py-sudo -u nobody -- id -u` runs `id` as `nobody`. Options, `NAME=value`
+assignments, password prompts, terminal handling, policy and exit status are
+those of the installed sudo. This entry point requires system sudo; it never
+falls back to `pkexec` or `osascript`.
+
+On **Windows**, `py-sudo` uses the same UAC and standard-stream handling as
+`py-admin-launch`. It waits and returns the command's exit code by default.
+Use `-b` to return after startup, `-D DIR` to set the working directory, or
+`-n` to fail without opening UAC if not already elevated. `-u root` and
+`-u "#0"` request an administrator token, not a different account. `-s` alone
+opens an interactive `cmd.exe`; for a shell built-in use, for example,
+`py-sudo cmd.exe /d /c ver`. `py-sudo --help` lists the Windows options.
+Unix-only operations such as `-u nobody`, `-S`, `-E`, `-v` and leading
+`NAME=value` assignments are rejected, not silently ignored.
+
 ## Python API
 
 ```python
