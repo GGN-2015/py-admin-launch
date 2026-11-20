@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import os
 import platform
+import signal
 import shlex
 import shutil
 import subprocess
@@ -26,9 +27,7 @@ class LaunchResult:
 
     ``elevated`` means the command was launched with administrator/root rights.
     When the current process is already elevated, this is true even though no
-    prompt is shown. ``returncode`` is available only when ``wait=True`` or when
-    a direct launch exits before returning. Elevated Windows launches use
-    ShellExecuteW and do not expose a child process handle.
+    prompt is shown. ``returncode`` is available when ``wait=True``.
     """
 
     elevated: bool
@@ -62,10 +61,8 @@ def launch(
     directly as the current user. Otherwise, the platform-specific elevation
     mechanism is used:
 
-    * Linux: ``pkexec`` (polkit GUI authentication), falling back to ``sudo``.
-      Desktop session variables are passed explicitly so GUI programs can find
-      the display after privilege elevation.
-    * Windows: ``ShellExecuteW(..., "runas", ...)``.
+    * Linux: terminal/headless ``sudo`` or desktop ``pkexec``.
+    * Windows: a hidden UAC helper using the caller's standard streams.
     * macOS: ``osascript`` with ``administrator privileges``.
 
     ``command`` is safest as a sequence, for example
@@ -81,7 +78,8 @@ def launch(
 
     system = platform.system()
     if system == "Windows":
-        return _launch_windows(argv, cwd=normalized_cwd)
+        from ._windows import launch_windows
+        return launch_windows(argv, cwd=normalized_cwd, wait=wait)
     if system == "Darwin":
         return _launch_macos(argv, cwd=normalized_cwd, wait=wait)
     if system == "Linux":
@@ -130,11 +128,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         result = launch(command_argv, cwd=namespace.cwd, wait=namespace.wait)
+    except KeyboardInterrupt:
+        return 130
     except (AdminLaunchError, OSError) as exc:
         print(f"py-admin-launch: {exc}", file=sys.stderr)
         return 1
 
-    return result.returncode if result.returncode is not None else 0
+    code = result.returncode or 0
+    return 128 - code if os.name == "posix" and code < 0 else code
 
 
 def _normalize_command(command: Command, args: Sequence[PathLike]) -> List[str]:
@@ -160,7 +161,26 @@ def _launch_direct(
 ) -> LaunchResult:
     process = subprocess.Popen(argv, cwd=cwd)
     if wait:
-        return LaunchResult(elevated=elevated, returncode=process.wait(), pid=process.pid)
+        try:
+            code = process.wait()
+        except KeyboardInterrupt:
+            if os.name == "posix" and process.poll() is None:
+                try:
+                    process.send_signal(signal.SIGINT)
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.terminate()
+                        process.wait()
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        raise AdminLaunchError("permission denied interrupting the elevated process")
+            raise
+        return LaunchResult(elevated=elevated, returncode=code, pid=process.pid)
     return LaunchResult(elevated=elevated, pid=process.pid)
 
 
@@ -170,38 +190,44 @@ def _launch_linux(
     cwd: Optional[str],
     wait: bool,
 ) -> LaunchResult:
-    elevator = shutil.which("pkexec")
-    if elevator is None:
-        elevator = shutil.which("sudo")
-    if elevator is None:
-        raise AdminLaunchError("neither pkexec nor sudo was found")
-
-    elevated_argv = [elevator, *_linux_elevated_command(argv)]
-    process = subprocess.Popen(elevated_argv, cwd=cwd)
-    if wait:
-        return LaunchResult(elevated=True, returncode=process.wait(), pid=process.pid)
-    return LaunchResult(elevated=True, pid=process.pid)
-
-
-def _linux_elevated_command(argv: Sequence[str]) -> List[str]:
-    command_argv = _resolve_linux_executable(argv)
-    gui_env = _linux_gui_env_assignments()
-    if not gui_env:
-        return command_argv
-
-    env_executable = shutil.which("env") or "/usr/bin/env"
-    return [env_executable, *gui_env, *command_argv]
+    tty = _has_controlling_tty()
+    desktop = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    sudo, pkexec = shutil.which("sudo"), shutil.which("pkexec")
+    command = _resolve_linux_executable(argv, cwd)
+    if sudo and (tty or not desktop or not pkexec):
+        prefix = [sudo, "--"] if tty else [sudo, "-n", "--"]
+        elevated_argv = prefix + command
+    elif pkexec:
+        gui_env = _linux_gui_env_assignments() if desktop else []
+        prefix = [pkexec, "--keep-cwd"]
+        if not (tty and os.isatty(0)):
+            prefix.append("--disable-internal-agent")
+        elevated_argv = prefix + (["/usr/bin/env", *gui_env] if gui_env else []) + command
+    else:
+        raise AdminLaunchError("install sudo or polkit (pkexec) to launch as root")
+    return _launch_direct(elevated_argv, cwd=cwd, wait=wait, elevated=True)
 
 
-def _resolve_linux_executable(argv: Sequence[str]) -> List[str]:
+def _has_controlling_tty() -> bool:
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+def _resolve_linux_executable(argv: Sequence[str], cwd: Optional[str]) -> List[str]:
     command_argv = list(argv)
     executable = command_argv[0]
     if os.path.dirname(executable):
+        command_argv[0] = os.path.abspath(os.path.join(cwd or os.curdir, executable))
         return command_argv
 
-    resolved = shutil.which(executable)
+    path = os.pathsep.join(os.path.join(cwd or os.curdir, entry) for entry in os.get_exec_path())
+    resolved = shutil.which(executable, path=path)
     if resolved is not None:
-        command_argv[0] = resolved
+        command_argv[0] = os.path.abspath(resolved)
     return command_argv
 
 
@@ -216,28 +242,6 @@ def _linux_gui_env_assignments() -> List[str]:
         if os.path.exists(fallback_xauthority):
             assignments.append(f"XAUTHORITY={fallback_xauthority}")
     return assignments
-
-
-def _launch_windows(argv: Sequence[str], *, cwd: Optional[str]) -> LaunchResult:
-    if platform.system() != "Windows":
-        raise AdminLaunchError("ShellExecuteW is available only on Windows")
-
-    executable = argv[0]
-    parameters = subprocess.list2cmdline(list(argv[1:]))
-    operation = "runas"
-    show_normal = 1
-
-    shell_execute = ctypes.windll.shell32.ShellExecuteW
-    result = shell_execute(None, operation, executable, parameters, cwd, show_normal)
-    result_code = int(result)
-    if result_code <= 32:
-        message = _WINDOWS_SHELLEXECUTE_ERRORS.get(
-            result_code,
-            f"ShellExecuteW failed with code {result_code}",
-        )
-        raise AdminLaunchError(message)
-
-    return LaunchResult(elevated=True)
 
 
 def _launch_macos(
@@ -297,22 +301,6 @@ def _build_posix_shell_command(
 
 def _escape_applescript_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-_WINDOWS_SHELLEXECUTE_ERRORS = {
-    0: "the operating system is out of memory or resources",
-    2: "file was not found",
-    3: "path was not found",
-    5: "access was denied",
-    8: "the operating system is out of memory or resources",
-    26: "a sharing violation occurred",
-    27: "the file association is incomplete or invalid",
-    28: "the DDE transaction timed out",
-    29: "the DDE transaction failed",
-    30: "the DDE transaction is busy",
-    31: "there is no application associated with the specified file",
-    32: "the specified DLL was not found",
-}
 
 
 _LINUX_GUI_ENV_VARS = (

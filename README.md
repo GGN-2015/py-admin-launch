@@ -9,12 +9,18 @@ standard-library implementation.
 
 ## Strategy
 
-- Linux desktop: `pkexec` for polkit GUI authentication, falling back to `sudo`
-  when `pkexec` is not available. GUI session variables such as `DISPLAY`,
-  `XAUTHORITY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and
-  `DBUS_SESSION_BUS_ADDRESS` are passed explicitly so desktop apps can still
-  reach the current display after elevation.
-- Windows: `ShellExecuteW(..., "runas", ...)`.
+- Windows: UAC starts a hidden helper. The command uses the caller's console
+  for interactive streams and the original file or pipe handles for redirected
+  streams. Standard output and standard error remain separate; binary data is
+  not decoded or copied through a TCP server. Only the UAC consent dialog is
+  needed, not a second command window.
+- Linux: a controlling terminal uses `sudo`, which can prompt on `/dev/tty`
+  even when command input is piped. A headless session uses `sudo -n`: arrange
+  noninteractive authorization or the command fails on stderr. A graphical
+  session without a controlling terminal prefers `pkexec` and a polkit agent.
+  `pkexec` receives the display/session variables and keeps the working directory;
+  `sudo` uses its configured environment policy and the requested working directory.
+  Standard input, output and error are inherited in all three cases.
 - macOS: `osascript` + `with administrator privileges`, falling back to `sudo`
   when `osascript` is not available.
 
@@ -42,25 +48,32 @@ py-admin-launch --cwd /path/to/workdir -- your-command arg1 arg2
 py-admin-launch --no-wait -- your-command arg1 arg2
 ```
 
-The CLI waits by default. On Linux and macOS, that means `py-admin-launch`
-returns the elevated command's exit code, including failures such as cancelled
-authentication or a failed `pkexec`/`sudo` invocation. This matches the behavior
-users usually expect from commands like `sudo your-command`.
+The CLI waits by default and returns the command's exit code. On Windows and
+Linux, use ordinary shell pipes and redirection. For example, in `cmd.exe` or
+a POSIX shell:
+
+```sh
+py-admin-launch -- your-command < input.bin > output.bin 2> errors.log
+```
+
+Press Ctrl+C to interrupt a foreground command. On Windows the console delivers
+Ctrl+C to an attached command. With all three streams redirected, the helper
+forwards Ctrl+C to the command's private hidden console instead. On cancellation
+the helper gives the command up to three seconds to exit, then terminates any
+remaining processes in its job. The CLI reports an interrupt as exit code 130.
 
 Use `--no-wait` only when you intentionally want to start the command in the
-background and return after the elevation request is handed off. In that mode,
-the launcher cannot report the elevated command's later exit code.
-
-On Windows, elevated launches use `ShellExecuteW(..., "runas", ...)`, which does
-not provide a child process handle to this helper. That means the CLI cannot
-observe the elevated program's exit code on Windows.
+background. On Windows it returns after the helper confirms the command has
+started. The child retains its stream handles, but the launcher no longer waits
+for its exit or supervises Ctrl+C. Redirect streams before handing off if the
+child should not share the terminal.
 
 ## Python API
 
 ```python
 from py_admin_launch import launch
 
-launch(["python", "-m", "http.server", "80"])
+launch(["python", "-m", "http.server", "80"], wait=True)
 ```
 
 `launch()` accepts a command list plus optional `cwd` and `wait` arguments:
@@ -70,5 +83,14 @@ result = launch(["your-command", "arg1"], cwd="/tmp", wait=True)
 print(result.elevated, result.returncode)
 ```
 
-When `wait=True`, `returncode` is the launched command's exit code where the
-platform exposes one. When `wait=False`, `returncode` is `None`.
+Use `wait=True` for foreground execution and interruption. With the API default
+`wait=False`, `returncode` is `None`. On Windows, `pid` is the target command's
+PID, not the helper's.
+
+## Testing
+
+Run `python -m unittest discover -s tests -v`. Windows integration tests use
+the real helper and Win32 IPC with the `open` verb so CI needs no consent UI.
+Set `PAL_TEST_UAC=1` from a **non-administrator** terminal to exercise `runas`
+instead. Linux integration tests run as root or with noninteractive `sudo`
+authorization for the test interpreter.

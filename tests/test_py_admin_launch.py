@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest import mock
 
@@ -17,12 +18,13 @@ class AdminLaunchTests(unittest.TestCase):
         self.assertTrue(result.elevated)
         self.assertEqual(result.pid, 123)
 
-    def test_linux_prefers_pkexec(self):
+    @mock.patch("py_admin_launch._has_controlling_tty", return_value=True)
+    def test_linux_prefers_sudo_in_terminal(self, tty):
         with mock.patch("py_admin_launch.is_admin", return_value=False), mock.patch(
             "py_admin_launch.platform.system", return_value="Linux"
         ), mock.patch.dict("py_admin_launch.os.environ", {}, clear=True), mock.patch(
             "py_admin_launch.shutil.which",
-            side_effect=["/usr/bin/pkexec", "/usr/local/bin/tool"],
+            side_effect=["/usr/bin/sudo", "/usr/bin/pkexec", "/usr/local/bin/tool"],
         ), mock.patch(
             "py_admin_launch.subprocess.Popen"
         ) as popen:
@@ -30,10 +32,11 @@ class AdminLaunchTests(unittest.TestCase):
 
             result = py_admin_launch.launch(["tool", "arg"])
 
-        popen.assert_called_once_with(["/usr/bin/pkexec", "/usr/local/bin/tool", "arg"], cwd=None)
+        popen.assert_called_once_with(["/usr/bin/sudo", "--", os.path.abspath("/usr/local/bin/tool"), "arg"], cwd=None)
         self.assertTrue(result.elevated)
 
-    def test_linux_passes_gui_environment_through_elevation(self):
+    @mock.patch("py_admin_launch._has_controlling_tty", return_value=False)
+    def test_linux_passes_gui_environment_through_elevation(self, tty):
         environ = {
             "DISPLAY": ":0",
             "XAUTHORITY": "/home/neko/.Xauthority",
@@ -46,36 +49,39 @@ class AdminLaunchTests(unittest.TestCase):
             "py_admin_launch.platform.system", return_value="Linux"
         ), mock.patch.dict("py_admin_launch.os.environ", environ, clear=True), mock.patch(
             "py_admin_launch.shutil.which",
-            side_effect=["/usr/bin/pkexec", "/opt/conda/bin/tool", "/usr/bin/env"],
+            side_effect=["/usr/bin/sudo", "/usr/bin/pkexec", "/opt/conda/bin/tool"],
         ), mock.patch(
             "py_admin_launch.subprocess.Popen"
         ) as popen:
             popen.return_value.pid = 123
 
-            result = py_admin_launch.launch(["tool", "arg"])
+            result = py_admin_launch.launch(["tool", "arg"], cwd="work")
 
         popen.assert_called_once_with(
             [
                 "/usr/bin/pkexec",
+                "--keep-cwd",
+                "--disable-internal-agent",
                 "/usr/bin/env",
                 "DISPLAY=:0",
                 "XAUTHORITY=/home/neko/.Xauthority",
                 "WAYLAND_DISPLAY=wayland-0",
                 "XDG_RUNTIME_DIR=/run/user/1000",
                 "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
-                "/opt/conda/bin/tool",
+                os.path.abspath("/opt/conda/bin/tool"),
                 "arg",
             ],
-            cwd=None,
+            cwd="work",
         )
         self.assertTrue(result.elevated)
 
-    def test_linux_falls_back_to_sudo(self):
+    @mock.patch("py_admin_launch._has_controlling_tty", return_value=False)
+    def test_linux_headless_sudo_never_reads_password_from_stdin(self, tty):
         with mock.patch("py_admin_launch.is_admin", return_value=False), mock.patch(
             "py_admin_launch.platform.system", return_value="Linux"
         ), mock.patch.dict("py_admin_launch.os.environ", {}, clear=True), mock.patch(
             "py_admin_launch.shutil.which",
-            side_effect=[None, "/usr/bin/sudo", "/usr/local/bin/tool"],
+            side_effect=["/usr/bin/sudo", "/usr/bin/pkexec", "/usr/local/bin/tool"],
         ), mock.patch(
             "py_admin_launch.subprocess.Popen"
         ) as popen:
@@ -83,7 +89,7 @@ class AdminLaunchTests(unittest.TestCase):
 
             result = py_admin_launch.launch(["tool", "arg"])
 
-        popen.assert_called_once_with(["/usr/bin/sudo", "/usr/local/bin/tool", "arg"], cwd=None)
+        popen.assert_called_once_with(["/usr/bin/sudo", "-n", "--", os.path.abspath("/usr/local/bin/tool"), "arg"], cwd=None)
         self.assertTrue(result.elevated)
 
     def test_macos_uses_osascript(self):
@@ -103,25 +109,9 @@ class AdminLaunchTests(unittest.TestCase):
         self.assertIn("'two words'", called_argv[2])
         self.assertTrue(result.elevated)
 
-    def test_windows_uses_shell_execute_runas(self):
-        fake_shell32 = mock.Mock()
-        fake_shell32.ShellExecuteW.return_value = 33
-        fake_windll = mock.Mock(shell32=fake_shell32)
-
-        with mock.patch("py_admin_launch.is_admin", return_value=False), mock.patch(
-            "py_admin_launch.platform.system", return_value="Windows"
-        ), mock.patch("py_admin_launch.ctypes.windll", fake_windll, create=True):
-            result = py_admin_launch.launch(["tool.exe", "two words"])
-
-        fake_shell32.ShellExecuteW.assert_called_once_with(
-            None,
-            "runas",
-            "tool.exe",
-            '"two words"',
-            None,
-            1,
-        )
-        self.assertTrue(result.elevated)
+    def test_cli_interrupt_exit_code(self):
+        with mock.patch("py_admin_launch.launch", side_effect=KeyboardInterrupt):
+            self.assertEqual(py_admin_launch.main(["tool"]), 130)
 
     def test_cli_waits_by_default_and_returns_child_exit_code(self):
         result = py_admin_launch.LaunchResult(elevated=True, returncode=7, pid=123)
